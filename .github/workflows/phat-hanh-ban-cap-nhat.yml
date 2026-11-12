@@ -1,0 +1,65 @@
+# CMD Kế toán — nút "Phát hành bản cập nhật" (Q33, chủ đồng ý 11/11/2026). ĐẶT Ở KHO CÔNG KHAI dmbmagician/cmd-ketoan-ban-cai (chỉ chủ ghi được),
+# KHÔNG đặt ở kho mã nguồn: ở kho mã nguồn, ai đẩy được mã lên một nhánh (kể cả phiên AI) đều đọc được mọi biến bí mật của kho qua một quy trình sửa
+# trên nhánh đó (GitHub: "Any user with write access to your repository has read access to all secrets"). Bản gốc + test: kho mã nguồn
+# tools/cmd-license-tools/kho-cong-khai/ — sửa ở đó rồi chép lại sang đây (README máy chủ key, mục "Hai nút trên GitHub").
+# Bấm: Actions → "Phát hành bản cập nhật CMD" → Run workflow → gõ số bản + PHAT-HANH → Run. Không dùng action ngoài; không chạy mã của kho mã nguồn.
+# Rà độc lập R12 (2.6.0): bỏ ô "Bản vá an toàn" (cờ lấy từ build-info của lượt dựng CI); bộ cài phải khớp SHA-256 in trong nhật ký lượt dựng đã đạt.
+name: Phát hành bản cập nhật CMD
+
+on:
+  workflow_dispatch:
+    inputs:
+      ban:
+        description: 'Số bản phát hành (ví dụ 2.6.1) — bản đã dựng trên GitHub và bạn đã thử'
+        required: true
+        type: string
+      xac_nhan:
+        description: 'Gõ PHAT-HANH để phát hành cho mọi khách'
+        required: true
+        type: string
+      commit:
+        description: 'Mã commit 7 ký tự — chỉ cần khi có nhiều bản dựng cùng số bản'
+        required: false
+        type: string
+      ghi_chu:
+        description: 'Ghi chú cho khách (không bắt buộc)'
+        required: false
+        type: string
+      tu_ban:
+        description: 'Máy đang chạy CMD từ bản này trở lên mới thấy bản mới (để nguyên nếu không chắc)'
+        required: false
+        type: string
+        default: '2.6.0'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phat-hanh-cmd
+  cancel-in-progress: false
+
+jobs:
+  phat-hanh:
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Kiểm xác nhận
+        env:
+          XAC_NHAN: ${{ inputs.xac_nhan }}
+        run: |
+          if [ "$XAC_NHAN" != "PHAT-HANH" ]; then echo "::error::Chưa gõ PHAT-HANH — không phát hành."; exit 1; fi
+          node -e "if(+process.versions.node.split('.')[0]<20){console.log('::error::Cần Node 20 trở lên');process.exit(1)}"
+      - name: Lấy lệnh phát hành của kho này (đúng commit đang chạy)
+        run: curl -fsSL --retry 3 -o "$RUNNER_TEMP/phat-hanh.mjs" "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/.github/cmd/phat-hanh.mjs"
+      - name: Phát hành
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NGUON_TOKEN: ${{ secrets.NGUON_TOKEN }}
+          CMD_UPDATE_KEY: ${{ secrets.CMD_UPDATE_KEY }}
+          CMD_PHAT_HANH_TOKEN: ${{ secrets.CMD_PHAT_HANH_TOKEN }}
+          BAN: ${{ inputs.ban }}
+          COMMIT: ${{ inputs.commit }}
+          GHI_CHU: ${{ inputs.ghi_chu }}
+          TU_BAN: ${{ inputs.tu_ban }}
+        run: node "$RUNNER_TEMP/phat-hanh.mjs" phat-hanh
