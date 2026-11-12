@@ -1,0 +1,76 @@
+# CMD Kế toán — nút "Cập nhật máy chủ key" (Q30, chủ đồng ý 11/11/2026; chuyển sang kho công khai theo Q33). ĐẶT Ở KHO CÔNG KHAI
+# dmbmagician/cmd-ketoan-ban-cai (chỉ chủ ghi được), KHÔNG đặt ở kho mã nguồn: ai đẩy được mã lên kho mã nguồn (kể cả phiên AI) đều đọc được biến bí mật
+# của kho đó. Bản gốc + test: kho mã nguồn tools/cmd-license-tools/kho-cong-khai/ — sửa ở đó rồi chép lại sang đây.
+# Bấm: Actions → "Cập nhật máy chủ key" → Run workflow → gõ số bản CMD có mã máy chủ cần triển khai + CAP-NHAT → Run. Lấy mã máy chủ ĐÚNG commit của
+# bản dựng CI đã đạt của số bản đó (NGUON_TOKEN chỉ đọc), test máy chủ, rồi tools/cmd-license-tools/deploy-server.mjs (tìm D1, schema, triển khai, kiểm).
+# Mã truy cập Cloudflare chỉ đưa cho bước cuối. Không đổi khóa / biến bí mật của máy chủ (đặt một lần bằng setup-cloudflare.mjs).
+name: Cập nhật máy chủ key
+
+on:
+  workflow_dispatch:
+    inputs:
+      ban:
+        description: 'Số bản CMD có mã máy chủ cần triển khai (ví dụ 2.6.0)'
+        required: true
+        type: string
+      xac_nhan:
+        description: 'Gõ CAP-NHAT để cập nhật máy chủ key thật (cmdketoan.ducmb97.workers.dev)'
+        required: true
+        type: string
+      commit:
+        description: 'Mã commit 7 ký tự — chỉ cần khi có nhiều bản dựng cùng số bản'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cap-nhat-may-chu-key
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Kiểm xác nhận
+        env:
+          XAC_NHAN: ${{ inputs.xac_nhan }}
+        run: |
+          if [ "$XAC_NHAN" != "CAP-NHAT" ]; then echo "::error::Chưa gõ CAP-NHAT — không cập nhật."; exit 1; fi
+          node -e "if(+process.versions.node.split('.')[0]<20){console.log('::error::Cần Node 20 trở lên');process.exit(1)}"
+      - name: Lấy lệnh tìm bản dựng của kho này (đúng commit đang chạy)
+        run: curl -fsSL --retry 3 -o "$RUNNER_TEMP/phat-hanh.mjs" "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/.github/cmd/phat-hanh.mjs"
+      - name: Tìm commit của bản dựng
+        id: tim
+        env:
+          NGUON_TOKEN: ${{ secrets.NGUON_TOKEN }}
+          BAN: ${{ inputs.ban }}
+          COMMIT: ${{ inputs.commit }}
+        run: node "$RUNNER_TEMP/phat-hanh.mjs" tim
+      - name: Lấy mã máy chủ (kho mã nguồn, đúng commit)
+        env:
+          NGUON_TOKEN: ${{ secrets.NGUON_TOKEN }}
+          SHA: ${{ steps.tim.outputs.sha }}
+        run: |
+          case "$SHA" in *[!0-9a-f]*|'') echo "::error::Không có commit"; exit 1;; esac
+          git init -q src
+          git -C src -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$NGUON_TOKEN" | base64 -w0)" fetch -q --depth 1 https://github.com/dmbmagician/CMD-PHAN-MEM-KE-TOAN "$SHA"
+          git -C src checkout -q FETCH_HEAD
+      - name: Cài thư viện máy chủ (theo package-lock, không chạy lệnh cài)
+        working-directory: src/server/cmd-key-server
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test máy chủ
+        working-directory: src/server/cmd-key-server
+        run: npx vitest run --reporter=dot
+      - name: Test lệnh cập nhật máy chủ
+        working-directory: src
+        run: node --test tools/cmd-license-tools/test/deploy-server.test.mjs
+      - name: Cập nhật máy chủ key
+        working-directory: src
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node tools/cmd-license-tools/deploy-server.mjs
