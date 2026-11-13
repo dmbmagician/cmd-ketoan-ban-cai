@@ -196,22 +196,29 @@ export function taoGithub(token, fetchFn) {
   return { call, pages, taiQuaApi, docNhatKy, token };
 }
 
-// Tìm bộ cài của bản dựng CI: (1) bản thử ci/<số bản>-<commit7> có tệp CMD-Ke-Toan-<số bản>-Setup.exe; (2) artifact CMD-Ke-Toan-<số bản> chưa hết hạn.
-// Nhiều bản dựng cùng số bản → phải gõ mã commit. Lượt dựng CI (windows-package.yml) của commit đó phải ĐẠT.
+// Tìm bộ cài của bản dựng CI: (1) bản thử ci/<số bản>-<commit7> có MỘT tệp CMD-Ke-Toan-<số bản>.zip (bộ cài + sổ tay — MOT-TEP-TAI, từ 2.6.1) hoặc kiểu cũ
+// tệp CMD-Ke-Toan-<số bản>-Setup.exe (+ sổ tay riêng); (2) artifact CMD-Ke-Toan-<số bản> chưa hết hạn. Nhiều bản dựng cùng số bản → phải gõ mã commit. Lượt
+// dựng CI (windows-package.yml) của commit đó phải ĐẠT.
 export async function timBanDung(src, { ban, commit = '', nguon = NGUON }) {
   const setupName = `CMD-Ke-Toan-${ban}-Setup.exe`;
+  const zipName = `CMD-Ke-Toan-${ban}.zip`;
   const cands = new Map();
   const tagRe = new RegExp(`^ci/${ban.replace(/\./g, '\\.')}-([0-9a-f]{7})$`);
   for (const r of await src.pages(`/repos/${nguon}/releases`)) {
     const m = tagRe.exec(String(r?.tag_name || ''));
     if (!m) continue;
-    const asset = (r.assets || []).find((a) => a && a.name === setupName && a.state === 'uploaded');
-    if (!asset) continue;
+    const zipAsset = (r.assets || []).find((a) => a && a.name === zipName && a.state === 'uploaded');
+    const asset = zipAsset ? null : (r.assets || []).find((a) => a && a.name === setupName && a.state === 'uploaded');
+    if (!zipAsset && !asset) continue;
     let sha = String(r.target_commitish || '').toLowerCase();
     if (!/^[0-9a-f]{40}$/.test(sha) || !sha.startsWith(m[1])) {
       const c = await src.call('GET', `/repos/${nguon}/commits/${m[1]}`, { okNull: true });
       sha = String(c?.sha || '').toLowerCase();
       if (!/^[0-9a-f]{40}$/.test(sha) || !sha.startsWith(m[1])) continue;
+    }
+    if (zipAsset) {
+      cands.set(sha, { sha, nguon: 'release-zip', tag: m[1], zipId: zipAsset.id, zipName, at: String(r.created_at || '') });
+      continue;
     }
     const soTay = (r.assets || []).find((a) => a && a.name === 'So-tay-CMD-Ke-Toan.html' && a.state === 'uploaded');
     cands.set(sha, { sha, nguon: 'release', tag: m[1], assetId: asset.id, soTayId: soTay ? soTay.id : null, at: String(r.created_at || '') });
@@ -367,12 +374,15 @@ export async function taiBoCai(src, bd, { dir, fetchFn, nguon = NGUON, unzip = g
       await src.taiQuaApi(`/repos/${nguon}/releases/assets/${bd.soTayId}`, soTay, { accept: 'application/octet-stream', max: 64 * 1048576 });
     }
   } else {
+    // Artifact, hoặc MOT-TEP-TAI: tệp CMD-Ke-Toan-<số bản>.zip của Releases ci/ — cùng cách lấy từng mục (unzip -p, không dựng lại liên kết tượng trưng).
     const zip = path.join(dir, 'ban-dung.zip');
-    await src.taiQuaApi(`/repos/${nguon}/actions/artifacts/${bd.artifactId}/zip`, zip);
+    const goi = bd.nguon === 'release-zip' ? 'Tệp ' + bd.zipName : 'Artifact';
+    if (bd.nguon === 'release-zip') await src.taiQuaApi(`/repos/${nguon}/releases/assets/${bd.zipId}`, zip, { accept: 'application/octet-stream' });
+    else await src.taiQuaApi(`/repos/${nguon}/actions/artifacts/${bd.artifactId}/zip`, zip);
     try {
       await unzip(zip, bd.setupName, setup, { max: MAX_BYTES });
     } catch {
-      throw loi('Artifact của bản dựng không có ' + bd.setupName + ' (hoặc đọc không được).');
+      throw loi(goi + ' của bản dựng không có ' + bd.setupName + ' (hoặc đọc không được).');
     }
     const st0 = path.join(dir, 'So-tay-CMD-Ke-Toan.html');
     try {
@@ -519,7 +529,7 @@ export async function phatHanh(env = process.env, deps = {}) {
 
   log(`[2/8] Tìm bộ cài của bản dựng ${vao.ban}`);
   const bd = await timBanDung(src, { ban: vao.ban, commit: vao.commit, nguon });
-  log(`  commit ${bd.sha.slice(0, 7)} — lượt dựng CI đã đạt; lấy từ ${bd.nguon === 'release' ? 'Releases ci/' + vao.ban + '-' + bd.tag : 'artifact'}`);
+  log(`  commit ${bd.sha.slice(0, 7)} — lượt dựng CI đã đạt; lấy từ ${bd.nguon === 'release' ? 'Releases ci/' + vao.ban + '-' + bd.tag : bd.nguon === 'release-zip' ? 'Releases ci/' + vao.ban + '-' + bd.tag + ' (' + bd.zipName + ')' : 'artifact'}`);
 
   log('[3/8] Tải bộ cài, đối chiếu SHA-256 với nhật ký lượt dựng CI');
   const dir = fs.mkdtempSync(path.join(env.RUNNER_TEMP || os.tmpdir(), 'cmd-ph-'));
